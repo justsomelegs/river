@@ -46,36 +46,84 @@ export namespace StandardSchemaV1 {
 	>['output'];
 }
 
-export type StreamRunner<Input, Chunk> = (args: {
+export interface BaseStreamContext {
+	event: RequestEvent;
+}
+
+export type StreamRunnerArgs<Input, Chunk> = {
 	input: Input;
 	appendChunk: (chunk: Chunk) => void;
-	meta: { event: RequestEvent };
+	meta: BaseStreamContext;
 	abortSignal: AbortSignal;
-}) => Promise<void> | void;
-
-export type StreamDefinition<Input = unknown, Chunk = unknown> = {
-	chunkSchema: StandardSchemaV1<unknown, Chunk>;
-	inputSchema?: StandardSchemaV1<unknown, Input>;
-	runner: StreamRunner<Input, Chunk>;
+	runId: string;
 };
 
-export type RiverPlugin = (ctx: {
-	getStream: (name: string) => StreamDefinition | undefined;
-	addMiddleware: (mw: RiverMiddleware) => void;
-}) => {
-	name: string;
+export type StreamRunner<Input, Chunk, Context = {}> = (
+	args: StreamRunnerArgs<Input, Chunk> & Context
+) => Promise<void> | void;
+
+export type BeforeRunArgs<Input, Context = {}> = {
+	input: Input;
+	meta: BaseStreamContext;
+	runId: string;
+	abortSignal: AbortSignal;
+} & Context;
+
+export type AfterRunArgs<Context = {}> = {
+	status: 'success' | 'error' | 'canceled';
+	runId: string;
+	meta: BaseStreamContext;
+} & Context;
+
+export type StreamDefinition<Input = unknown, Chunk = unknown, Context = {}> = {
+	chunkSchema: StandardSchemaV1<unknown, Chunk>;
+	inputSchema?: StandardSchemaV1<unknown, Input>;
+	runner: StreamRunner<Input, Chunk, Context>;
+	beforeRun?: (args: BeforeRunArgs<Input, Context>) => Promise<Input> | Input;
+	afterRun?: (args: AfterRunArgs<Context>) => Promise<void> | void;
+};
+
+export type StreamBuilderFn<PluginContext = {}> = <
+	C extends StandardSchemaV1,
+	I extends StandardSchemaV1 | undefined = undefined
+>(
+	config: I extends StandardSchemaV1
+		? {
+				chunkSchema: C;
+				inputSchema: I;
+				runner: StreamRunner<
+					StandardSchemaV1.InferOutput<I>,
+					StandardSchemaV1.InferOutput<C>,
+					PluginContext
+				>;
+				beforeRun?: (
+					args: BeforeRunArgs<StandardSchemaV1.InferOutput<I>, PluginContext>
+				) => Promise<StandardSchemaV1.InferOutput<I>> | StandardSchemaV1.InferOutput<I>;
+				afterRun?: (args: AfterRunArgs<PluginContext>) => Promise<void> | void;
+			}
+		: {
+				chunkSchema: C;
+				runner: StreamRunner<unknown, StandardSchemaV1.InferOutput<C>, PluginContext>;
+				beforeRun?: (args: BeforeRunArgs<unknown, PluginContext>) => Promise<unknown> | unknown;
+				afterRun?: (args: AfterRunArgs<PluginContext>) => Promise<void> | void;
+			}
+) => StreamDefinition<any, any, PluginContext>;
+
+export interface RiverPluginReturn<Context = {}> {
+	id: string;
 	onInit?: () => void | Promise<void>;
-	wrapRunner?: <I, C>(next: StreamRunner<I, C>) => StreamRunner<I, C>;
+	wrapRunner?: <I, C, Ctx>(next: StreamRunner<I, C, Ctx>) => StreamRunner<I, C, Ctx>;
 	onRequest?: (event: RequestEvent) => void | Promise<void>;
 	onChunk?: (chunk: unknown, streamName: string) => unknown;
 	onComplete?: (status: 'success' | 'error', streamName: string) => void | Promise<void>;
-};
+	extendRunnerContext?: (meta: BaseStreamContext) => Context;
+}
 
-export type RiverMiddleware = (args: {
-	event: RequestEvent;
-	streamName: string;
-	input: unknown;
-}) => Promise<{ continue: true; input?: unknown } | { continue: false; response: Response }>;
+export interface PluginContext {
+	getStream: (name: string) => StreamDefinition<any, any, any> | undefined;
+}
+
+export type RiverPlugin<Context = {}> = (ctx: PluginContext) => RiverPluginReturn<Context>;
 
 export type RiverServerConfig = {
 	heartbeatInterval?: number;
@@ -84,3 +132,16 @@ export type RiverServerConfig = {
 		credentials?: boolean;
 	};
 };
+
+export type MergeContexts<T extends readonly any[]> = T extends readonly [
+	infer First,
+	...infer Rest
+]
+	? First & MergeContexts<Rest>
+	: {};
+
+export type InferPluginContext<T> = T extends RiverPlugin<infer Context> ? Context : {};
+
+export type InferPluginsContext<T extends readonly RiverPlugin<any>[]> = MergeContexts<{
+	[K in keyof T]: InferPluginContext<T[K]>;
+}>;

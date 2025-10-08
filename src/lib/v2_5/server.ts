@@ -2,28 +2,41 @@ import type { RequestEvent } from '@sveltejs/kit';
 import type {
 	StreamDefinition,
 	RiverPlugin,
-	RiverMiddleware,
 	StreamRunner,
-	RiverServerConfig
+	RiverServerConfig,
+	RiverPluginReturn,
+	PluginContext,
+	BaseStreamContext,
+	InferPluginsContext,
+	StreamBuilderFn,
+	StandardSchemaV1
 } from './types.js';
 import { createSseStream } from './sse.js';
 
-export function riverServer<const T extends Record<string, any>>(config: {
-	plugins?: RiverPlugin[];
-	streams: T;
+export function riverServer<
+	const P extends readonly RiverPlugin<any>[],
+	const T extends Record<string, any>
+>(config: {
+	plugins?: P;
+	streams: (stream: StreamBuilderFn<InferPluginsContext<P>>) => T;
 	options?: RiverServerConfig;
 }) {
-	const registry = config.streams;
-	const plugins: ReturnType<RiverPlugin>[] = [];
-	const middlewares: RiverMiddleware[] = [];
+	const streamBuilder: StreamBuilderFn<InferPluginsContext<P>> = <
+		C extends StandardSchemaV1,
+		I extends StandardSchemaV1 | undefined = undefined
+	>(
+		streamConfig: any
+	) => streamConfig as StreamDefinition<any, any, InferPluginsContext<P>>;
+
+	const registry = config.streams(streamBuilder);
+	const plugins: RiverPluginReturn<any>[] = [];
 	const serverOptions = config.options || {};
 
-	const ctx = {
-		getStream: (name: string) => registry[name as keyof T],
-		addMiddleware: (mw: RiverMiddleware) => middlewares.push(mw)
+	const ctx: PluginContext = {
+		getStream: (name: string) => registry[name as keyof T]
 	};
 
-	const initPlugin = (p: RiverPlugin) => {
+	const initPlugin = (p: RiverPlugin<any>) => {
 		const instance = p(ctx);
 		plugins.push(instance);
 		instance.onInit?.();
@@ -31,7 +44,7 @@ export function riverServer<const T extends Record<string, any>>(config: {
 
 	config.plugins?.forEach(initPlugin);
 
-	const applyRunnerWrappers = <I, C>(runner: StreamRunner<I, C>): StreamRunner<I, C> => {
+	const applyRunnerWrappers = <I, C>(runner: StreamRunner<I, C, any>): StreamRunner<I, C, any> => {
 		let wrapped = runner;
 		for (const p of plugins) {
 			if (p.wrapRunner) {
@@ -39,6 +52,17 @@ export function riverServer<const T extends Record<string, any>>(config: {
 			}
 		}
 		return wrapped;
+	};
+
+	const buildExtendedContext = (meta: BaseStreamContext): any => {
+		let extendedContext = {};
+		for (const p of plugins) {
+			if (p.extendRunnerContext) {
+				const pluginContext = p.extendRunnerContext(meta);
+				extendedContext = { ...extendedContext, ...pluginContext };
+			}
+		}
+		return extendedContext;
 	};
 
 	const getCorsHeaders = (requestOrigin: string | null): Record<string, string> => {
@@ -67,7 +91,7 @@ export function riverServer<const T extends Record<string, any>>(config: {
 
 	return {
 		use: initPlugin,
-		get: <K extends keyof T>(name: K): T[K] => registry[name],
+		get: <K extends keyof T>(name: K): T[K] => registry[name] as T[K],
 		toEndpoint: () => ({
 			async OPTIONS(event: RequestEvent) {
 				const corsHeaders = getCorsHeaders(event.request.headers.get('origin'));
@@ -104,7 +128,7 @@ export function riverServer<const T extends Record<string, any>>(config: {
 					});
 				}
 
-				const def = registry[name as keyof T] as StreamDefinition<any, any> | undefined;
+				const def = registry[name as keyof T] as StreamDefinition<any, any, any> | undefined;
 				if (!def) {
 					return new Response(JSON.stringify({ error: `Unknown stream: ${name}` }), {
 						status: 404,
@@ -112,20 +136,11 @@ export function riverServer<const T extends Record<string, any>>(config: {
 					});
 				}
 
-				let currentInput = body?.input;
-				for (const mw of middlewares) {
-					const result = await mw({ event, streamName: name, input: currentInput });
-					if (result.continue === false) {
-						return result.response;
-					}
-					if (result.input !== undefined) {
-						currentInput = result.input;
-					}
-				}
+				// Potential future feature: middleware system for intercepting/transforming requests
 
-				let parsedInput: any = currentInput;
+				let parsedInput: any = body?.input;
 				if (def.inputSchema) {
-					const result = def.inputSchema['~standard'].validate(currentInput);
+					const result = def.inputSchema['~standard'].validate(body?.input);
 					const validationResult = result instanceof Promise ? await result : result;
 
 					if (validationResult.issues) {
@@ -143,6 +158,31 @@ export function riverServer<const T extends Record<string, any>>(config: {
 				const abortController = new AbortController();
 				const runner = applyRunnerWrappers(def.runner);
 				const corsHeaders = getCorsHeaders(event.request.headers.get('origin'));
+
+				const baseMeta: BaseStreamContext = { event };
+				const extendedContext = buildExtendedContext(baseMeta);
+				const runId = crypto.randomUUID();
+
+				// Call beforeRun hook if defined
+				if (def.beforeRun) {
+					try {
+						parsedInput = await def.beforeRun({
+							input: parsedInput,
+							meta: baseMeta,
+							runId,
+							abortSignal: abortController.signal,
+							...extendedContext
+						});
+					} catch (e) {
+						return new Response(
+							JSON.stringify({
+								error: 'beforeRun hook failed',
+								details: e instanceof Error ? e.message : 'Unknown error'
+							}),
+							{ status: 500, headers: { 'Content-Type': 'application/json' } }
+						);
+					}
+				}
 
 				const stream = createSseStream(
 					async ({ send, abortSignal }) => {
@@ -178,20 +218,47 @@ export function riverServer<const T extends Record<string, any>>(config: {
 							send(transformed);
 						};
 
+						let status: 'success' | 'error' | 'canceled' = 'success';
+
 						try {
 							await runner({
 								input: parsedInput,
 								appendChunk: emit,
-								meta: { event },
-								abortSignal
+								meta: baseMeta,
+								abortSignal,
+								runId,
+								...extendedContext
 							});
-							for (const p of plugins) {
-								await p.onComplete?.('success', name);
+
+							if (abortSignal.aborted) {
+								status = 'canceled';
 							}
 						} catch (e) {
-							console.error(`Stream "${name}" failed:`, e);
+							if (abortSignal.aborted) {
+								status = 'canceled';
+							} else {
+								status = 'error';
+								console.error(`Stream "${name}" failed:`, e);
+							}
+						} finally {
+							// Call plugin onComplete hooks
+							const pluginStatus = status === 'canceled' ? 'error' : status;
 							for (const p of plugins) {
-								await p.onComplete?.('error', name);
+								await p.onComplete?.(pluginStatus, name);
+							}
+
+							// Call afterRun hook if defined
+							if (def.afterRun) {
+								try {
+									await def.afterRun({
+										status,
+										runId,
+										meta: baseMeta,
+										...extendedContext
+									});
+								} catch (e) {
+									console.error(`afterRun hook failed for "${name}":`, e);
+								}
 							}
 						}
 					},

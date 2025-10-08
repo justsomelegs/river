@@ -1,14 +1,23 @@
 export { riverServer } from './server.js';
-export { defineStream } from './defineStream.js';
 export { createSseStream } from './sse.js';
 export { AI } from './plugins/ai.js';
-export { auth } from './plugins/auth.js';
+
+export type { AIPluginConfig, AIHelpers, StreamTextOptions } from './plugins/ai.js';
 
 export type {
 	StreamDefinition,
 	StreamRunner,
+	StreamRunnerArgs,
+	StreamBuilderFn,
 	RiverPlugin,
-	RiverMiddleware,
+	RiverPluginReturn,
 	RiverServerConfig,
-	StandardSchemaV1
+	PluginContext,
+	BaseStreamContext,
+	BeforeRunArgs,
+	AfterRunArgs,
+	StandardSchemaV1,
+	InferPluginContext,
+	InferPluginsContext,
+	MergeContexts
 } from './types.js';

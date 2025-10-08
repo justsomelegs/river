@@ -1,10 +1,46 @@
-import { riverServer, defineStream, AI, auth } from '$lib/v2_5/index.js';
+import { riverServer, AI } from '$lib/v2_5/index.js';
+import { openrouter } from '@openrouter/ai-sdk-provider';
 import { z } from 'zod';
 
 const server = riverServer({
-	plugins: [AI(), auth()],
-	streams: {
-		notifications: defineStream({
+	plugins: [
+		AI({
+			models: {
+				'gpt-4o-mini': openrouter('openai/gpt-4o-mini'),
+				'claude-3.5-sonnet': openrouter('anthropic/claude-3.5-sonnet')
+			},
+			defaultModel: 'gpt-4o-mini'
+		})
+	],
+
+	streams: (stream) => ({
+		aiChat: stream({
+			chunkSchema: z.object({
+				delta: z.string()
+			}),
+			inputSchema: z.object({
+				query: z.string(),
+				model: z.enum(['gpt-4o-mini', 'claude-3.5-sonnet']).default('gpt-4o-mini'),
+				system: z.string().optional()
+			}),
+			runner: async ({ input, appendChunk, ai, abortSignal }) => {
+				const result = ai.streamText({
+					model: input.model,
+					prompt: input.query,
+					system: input.system || 'You are a helpful assistant.',
+					temperature: 0.7
+				});
+
+				await ai.pipeTextStream(
+					result,
+					(delta) => {
+						appendChunk({ delta });
+					},
+					abortSignal
+				);
+			}
+		}),
+		notifications: stream({
 			chunkSchema: z.object({
 				type: z.literal('note'),
 				text: z.string(),
@@ -13,66 +49,15 @@ const server = riverServer({
 			runner: async ({ appendChunk, abortSignal }) => {
 				let i = 0;
 
-				// Add this to see if abort fires
-				abortSignal.addEventListener('abort', () => {
-					console.log('🛑 ABORT SIGNAL FIRED');
-				});
-
 				while (!abortSignal.aborted && i < 10) {
-					console.log(`Processing ${i}, aborted=${abortSignal.aborted}`);
-					appendChunk({ type: 'note', text: `hello ${i}`, i });
+					appendChunk({ type: 'note', text: `Notification ${i}`, i });
 					await new Promise((r) => setTimeout(r, 500));
 					i++;
 				}
-				console.log('✅ Runner exited');
-			}
-		}),
-
-		chat: defineStream({
-			chunkSchema: z.object({
-				role: z.enum(['user', 'assistant']),
-				content: z.string()
-			}),
-			inputSchema: z.object({
-				query: z.string(),
-				temperature: z.number().optional()
-			}),
-			runner: async ({ input, appendChunk, abortSignal }) => {
-				appendChunk({ role: 'user', content: input.query });
-				await new Promise((r) => setTimeout(r, 100));
-				if (!abortSignal.aborted) {
-					appendChunk({
-						role: 'assistant',
-						content: `Response to: ${input.query}`
-					});
-				}
-			}
-		}),
-
-		dataFeed: defineStream({
-			chunkSchema: z.discriminatedUnion('type', [
-				z.object({ type: z.literal('progress'), percent: z.number() }),
-				z.object({ type: z.literal('data'), value: z.any() }),
-				z.object({ type: z.literal('complete'), totalItems: z.number() })
-			]),
-			inputSchema: z.object({
-				source: z.string(),
-				limit: z.number().default(100)
-			}),
-			runner: async ({ input, appendChunk, abortSignal }) => {
-				for (let i = 0; i < input.limit && !abortSignal.aborted; i++) {
-					if (i % 10 === 0) {
-						appendChunk({ type: 'progress', percent: (i / input.limit) * 100 });
-					}
-					appendChunk({ type: 'data', value: { id: i, source: input.source } });
-					await new Promise((r) => setTimeout(r, 50));
-				}
-				if (!abortSignal.aborted) {
-					appendChunk({ type: 'complete', totalItems: input.limit });
-				}
 			}
 		})
-	}
+	})
 });
 
 export const POST = server.toEndpoint().POST;
+export const OPTIONS = server.toEndpoint().OPTIONS;
