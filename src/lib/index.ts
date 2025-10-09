@@ -21,4 +21,4 @@ export const V2_DEV = {
 };
 
 // v2.5 clean-slate implementation
-export * from './v2_5/index.js';
+export * from './v2_5_dev/index.js';

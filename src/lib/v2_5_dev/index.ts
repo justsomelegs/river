@@ -1,6 +1,8 @@
 export { riverServer } from './server.js';
 export { createSseStream } from './sse.js';
-export { AI } from './plugins/ai.js';
+export { ai } from './plugins/ai.js';
+export { createRiverPlugin } from './plugins/internal/create-river-plugin.js';
+export { defineContext } from './plugins/internal/plugin-context.js';
 
 export type { AIPluginConfig, AIHelpers, StreamTextOptions } from './plugins/ai.js';
 

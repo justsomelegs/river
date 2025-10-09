@@ -91,7 +91,7 @@ export function riverServer<
 
 	return {
 		use: initPlugin,
-		get: <K extends keyof T>(name: K): T[K] => registry[name] as T[K],
+		// get: <K extends keyof T>(name: K): T[K] => registry[name] as T[K],
 		toEndpoint: () => ({
 			async OPTIONS(event: RequestEvent) {
 				const corsHeaders = getCorsHeaders(event.request.headers.get('origin'));

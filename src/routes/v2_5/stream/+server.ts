@@ -1,10 +1,10 @@
-import { riverServer, AI } from '$lib/v2_5/index.js';
+import { riverServer, ai } from '$lib/v2_5_dev/index.js';
 import { openrouter } from '@openrouter/ai-sdk-provider';
 import { z } from 'zod';
 
 const server = riverServer({
 	plugins: [
-		AI({
+		ai({
 			models: {
 				'gpt-4o-mini': openrouter('openai/gpt-4o-mini'),
 				'claude-3.5-sonnet': openrouter('anthropic/claude-3.5-sonnet')
@@ -58,6 +58,8 @@ const server = riverServer({
 		})
 	})
 });
+
+
 
 export const POST = server.toEndpoint().POST;
 export const OPTIONS = server.toEndpoint().OPTIONS;
