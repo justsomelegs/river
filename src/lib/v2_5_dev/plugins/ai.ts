@@ -39,7 +39,9 @@ const createAIHelpers = (config: AIPluginConfig, meta: BaseStreamContext): AIHel
 		const model = config.models[modelId];
 		if (!model) {
 			const availableModels = Object.keys(config.models).join(', ');
-			throw new Error(`Model "${modelId}" not found in server config. Available models: ${availableModels}`);
+			throw new Error(
+				`Model "${modelId}" not found in server config. Available models: ${availableModels}`
+			);
 		}
 		return model;
 	};
@@ -62,7 +64,7 @@ const createAIHelpers = (config: AIPluginConfig, meta: BaseStreamContext): AIHel
 				abortSignal: meta.event.request.signal
 			});
 
-			return result
+			return result;
 		},
 
 		pipeTextStream: async (result, appendChunk, abortSignal) => {
@@ -80,19 +82,18 @@ const createAIHelpers = (config: AIPluginConfig, meta: BaseStreamContext): AIHel
 			}
 		}
 	};
-
-
 };
 
-// assemble the pieces of the plugin. 
+// assemble the pieces of the plugin.
 // (again this is could be a temporary API just messing around with things for now)
-export function ai(config: AIPluginConfig): RiverPlugin<{ ai: AIHelpers }> {
+export function ai(config: AIPluginConfig): RiverPlugin<{ ai: AIHelpers }, 'stream'> {
 	const context = defineContext({
 		ai: (meta) => createAIHelpers(config, meta)
 	});
 
-	return createRiverPlugin<{ ai: AIHelpers }>({
+	return createRiverPlugin<{ ai: AIHelpers }, 'stream'>({
 		id: 'ai',
+		scope: 'stream',
 		extend: (meta) => context.create(meta)
 	});
 }

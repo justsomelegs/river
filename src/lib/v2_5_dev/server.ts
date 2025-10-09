@@ -7,26 +7,29 @@ import type {
 	RiverPluginReturn,
 	PluginContext,
 	BaseStreamContext,
-	InferPluginsContext,
+	InferGlobalPluginsContext,
+	InferStreamPluginsContext,
 	StreamBuilderFn,
 	StandardSchemaV1
 } from './types.js';
 import { createSseStream } from './sse.js';
 
 export function riverServer<
-	const P extends readonly RiverPlugin<any>[],
+	const P extends readonly RiverPlugin<any, any>[],
 	const T extends Record<string, any>
 >(config: {
 	plugins?: P;
-	streams: (stream: StreamBuilderFn<InferPluginsContext<P>>) => T;
+	streams: (
+		stream: StreamBuilderFn<InferGlobalPluginsContext<P>, InferStreamPluginsContext<P>>
+	) => T;
 	options?: RiverServerConfig;
 }) {
-	const streamBuilder: StreamBuilderFn<InferPluginsContext<P>> = <
-		C extends StandardSchemaV1,
-		I extends StandardSchemaV1 | undefined = undefined
-	>(
+	const streamBuilder: StreamBuilderFn<
+		InferGlobalPluginsContext<P>,
+		InferStreamPluginsContext<P>
+	> = <C extends StandardSchemaV1, I extends StandardSchemaV1 | undefined = undefined>(
 		streamConfig: any
-	) => streamConfig as StreamDefinition<any, any, InferPluginsContext<P>>;
+	) => streamConfig as StreamDefinition<any, any, any>;
 
 	const registry = config.streams(streamBuilder);
 	const plugins: RiverPluginReturn<any>[] = [];
@@ -36,7 +39,7 @@ export function riverServer<
 		getStream: (name: string) => registry[name as keyof T]
 	};
 
-	const initPlugin = (p: RiverPlugin<any>) => {
+	const initPlugin = (p: RiverPlugin<any, any>) => {
 		const instance = p(ctx);
 		plugins.push(instance);
 		instance.onInit?.();
@@ -44,24 +47,61 @@ export function riverServer<
 
 	config.plugins?.forEach(initPlugin);
 
-	const applyRunnerWrappers = <I, C>(runner: StreamRunner<I, C, any>): StreamRunner<I, C, any> => {
+	// Create plugin maps by scope
+	const globalPlugins = plugins.filter((p) => p.scope === 'global');
+	const streamPlugins = plugins.filter((p) => p.scope === 'stream');
+
+	// Create map for quick lookup of stream plugins by ID
+	const streamPluginMap = new Map(streamPlugins.map((p) => [p.id, p]));
+
+	const applyRunnerWrappers = <I, C>(
+		runner: StreamRunner<I, C, any>,
+		usePlugins?: readonly string[]
+	): StreamRunner<I, C, any> => {
 		let wrapped = runner;
-		for (const p of plugins) {
+
+		// Apply global wrappers
+		for (const p of globalPlugins) {
 			if (p.wrapRunner) {
 				wrapped = p.wrapRunner(wrapped);
 			}
 		}
+
+		// Apply stream plugin wrappers if in use array
+		if (usePlugins) {
+			for (const pluginId of usePlugins) {
+				const plugin = streamPluginMap.get(pluginId);
+				if (plugin?.wrapRunner) {
+					wrapped = plugin.wrapRunner(wrapped);
+				}
+			}
+		}
+
 		return wrapped;
 	};
 
-	const buildExtendedContext = (meta: BaseStreamContext): any => {
+	const buildExtendedContext = (meta: BaseStreamContext, usePlugins?: readonly string[]): any => {
 		let extendedContext = {};
-		for (const p of plugins) {
+
+		// Always include global plugins
+		for (const p of globalPlugins) {
 			if (p.extendRunnerContext) {
 				const pluginContext = p.extendRunnerContext(meta);
 				extendedContext = { ...extendedContext, ...pluginContext };
 			}
 		}
+
+		// Include stream plugins only if they're in the `use` array
+		if (usePlugins && usePlugins.length > 0) {
+			for (const pluginId of usePlugins) {
+				const plugin = streamPluginMap.get(pluginId);
+				if (plugin?.extendRunnerContext) {
+					const pluginContext = plugin.extendRunnerContext(meta);
+					extendedContext = { ...extendedContext, ...pluginContext };
+				}
+			}
+		}
+
 		return extendedContext;
 	};
 
@@ -156,11 +196,11 @@ export function riverServer<
 				}
 
 				const abortController = new AbortController();
-				const runner = applyRunnerWrappers(def.runner);
+				const runner = applyRunnerWrappers(def.runner, def.use);
 				const corsHeaders = getCorsHeaders(event.request.headers.get('origin'));
 
 				const baseMeta: BaseStreamContext = { event };
-				const extendedContext = buildExtendedContext(baseMeta);
+				const extendedContext = buildExtendedContext(baseMeta, def.use);
 				const runId = crypto.randomUUID();
 
 				// Call beforeRun hook if defined

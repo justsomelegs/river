@@ -13,6 +13,7 @@ export type {
 	StreamBuilderFn,
 	RiverPlugin,
 	RiverPluginReturn,
+	RiverPluginScope,
 	RiverServerConfig,
 	PluginContext,
 	BaseStreamContext,
@@ -21,5 +22,9 @@ export type {
 	StandardSchemaV1,
 	InferPluginContext,
 	InferPluginsContext,
+	InferGlobalPluginsContext,
+	InferStreamPluginsContext,
+	FilterPluginsByScope,
+	StreamPluginIds,
 	MergeContexts
 } from './types.js';

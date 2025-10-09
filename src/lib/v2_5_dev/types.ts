@@ -1,5 +1,7 @@
 import type { RequestEvent } from '@sveltejs/kit';
 
+type Simplify<T> = { [K in keyof T]: T[K] } & {};
+
 export interface StandardSchemaV1<Input = unknown, Output = Input> {
 	readonly '~standard': {
 		readonly version: 1;
@@ -76,6 +78,7 @@ export type AfterRunArgs<Context = {}> = {
 } & Context;
 
 export type StreamDefinition<Input = unknown, Chunk = unknown, Context = {}> = {
+	use?: readonly string[];
 	chunkSchema: StandardSchemaV1<unknown, Chunk>;
 	inputSchema?: StandardSchemaV1<unknown, Input>;
 	runner: StreamRunner<Input, Chunk, Context>;
@@ -83,34 +86,56 @@ export type StreamDefinition<Input = unknown, Chunk = unknown, Context = {}> = {
 	afterRun?: (args: AfterRunArgs<Context>) => Promise<void> | void;
 };
 
-export type StreamBuilderFn<PluginContext = {}> = <
+export type StreamBuilderFn<GlobalContext = {}, StreamContext = {}> = <
 	C extends StandardSchemaV1,
-	I extends StandardSchemaV1 | undefined = undefined
+	I extends StandardSchemaV1 | undefined = undefined,
+	Use extends readonly (keyof StreamContext)[] = []
 >(
 	config: I extends StandardSchemaV1
 		? {
+				use?: Use;
 				chunkSchema: C;
 				inputSchema: I;
 				runner: StreamRunner<
 					StandardSchemaV1.InferOutput<I>,
 					StandardSchemaV1.InferOutput<C>,
-					PluginContext
+					GlobalContext & Pick<StreamContext, Use[number]>
 				>;
 				beforeRun?: (
-					args: BeforeRunArgs<StandardSchemaV1.InferOutput<I>, PluginContext>
+					args: BeforeRunArgs<
+						StandardSchemaV1.InferOutput<I>,
+						GlobalContext & Pick<StreamContext, Use[number]>
+					>
 				) => Promise<StandardSchemaV1.InferOutput<I>> | StandardSchemaV1.InferOutput<I>;
-				afterRun?: (args: AfterRunArgs<PluginContext>) => Promise<void> | void;
+				afterRun?: (
+					args: AfterRunArgs<GlobalContext & Pick<StreamContext, Use[number]>>
+				) => Promise<void> | void;
 			}
 		: {
+				use?: Use;
 				chunkSchema: C;
-				runner: StreamRunner<unknown, StandardSchemaV1.InferOutput<C>, PluginContext>;
-				beforeRun?: (args: BeforeRunArgs<unknown, PluginContext>) => Promise<unknown> | unknown;
-				afterRun?: (args: AfterRunArgs<PluginContext>) => Promise<void> | void;
+				runner: StreamRunner<
+					unknown,
+					StandardSchemaV1.InferOutput<C>,
+					GlobalContext & Pick<StreamContext, Use[number]>
+				>;
+				beforeRun?: (
+					args: BeforeRunArgs<unknown, GlobalContext & Pick<StreamContext, Use[number]>>
+				) => Promise<unknown> | unknown;
+				afterRun?: (
+					args: AfterRunArgs<GlobalContext & Pick<StreamContext, Use[number]>>
+				) => Promise<void> | void;
 			}
-) => StreamDefinition<any, any, PluginContext>;
+) => StreamDefinition<any, any, GlobalContext & Pick<StreamContext, Use[number]>>;
 
-export interface RiverPluginReturn<Context = {}> {
+export type RiverPluginScope = 'global' | 'stream';
+
+export interface RiverPluginReturn<
+	Context = {},
+	Scope extends RiverPluginScope = RiverPluginScope
+> {
 	id: string;
+	scope: Scope;
 	onInit?: () => void | Promise<void>;
 	wrapRunner?: <I, C, Ctx>(next: StreamRunner<I, C, Ctx>) => StreamRunner<I, C, Ctx>;
 	onRequest?: (event: RequestEvent) => void | Promise<void>;
@@ -123,7 +148,9 @@ export interface PluginContext {
 	getStream: (name: string) => StreamDefinition<any, any, any> | undefined;
 }
 
-export type RiverPlugin<Context = {}> = (ctx: PluginContext) => RiverPluginReturn<Context>;
+export type RiverPlugin<Context = {}, Scope extends RiverPluginScope = RiverPluginScope> = (
+	ctx: PluginContext
+) => RiverPluginReturn<Context, Scope>;
 
 export type RiverServerConfig = {
 	heartbeatInterval?: number;
@@ -140,8 +167,35 @@ export type MergeContexts<T extends readonly any[]> = T extends readonly [
 	? First & MergeContexts<Rest>
 	: {};
 
-export type InferPluginContext<T> = T extends RiverPlugin<infer Context> ? Context : {};
+export type InferPluginContext<T> = T extends RiverPlugin<infer Context, any> ? Context : {};
 
-export type InferPluginsContext<T extends readonly RiverPlugin<any>[]> = MergeContexts<{
+export type InferPluginsContext<T extends readonly RiverPlugin<any, any>[]> = MergeContexts<{
 	[K in keyof T]: InferPluginContext<T[K]>;
 }>;
+
+// Filter plugins by scope
+export type FilterPluginsByScope<
+	T extends readonly RiverPlugin<any, any>[],
+	Scope extends RiverPluginScope
+> = {
+	[K in keyof T]: T[K] extends RiverPlugin<any, any>
+		? ReturnType<T[K]> extends { scope: Scope }
+			? T[K]
+			: never
+		: never;
+}[number][];
+
+// Infer global plugins context
+export type InferGlobalPluginsContext<T extends readonly RiverPlugin<any, any>[]> = MergeContexts<{
+	[K in keyof T]: ReturnType<T[K]> extends { scope: 'global' } ? InferPluginContext<T[K]> : {};
+}>;
+
+// Infer stream plugins context
+export type InferStreamPluginsContext<T extends readonly RiverPlugin<any, any>[]> = MergeContexts<{
+	[K in keyof T]: ReturnType<T[K]> extends { scope: 'stream' } ? InferPluginContext<T[K]> : {};
+}>;
+
+// Get stream plugin IDs for autocomplete
+export type StreamPluginIds<T extends readonly RiverPlugin<any, any>[]> = {
+	[K in keyof T]: ReturnType<T[K]> extends { scope: 'stream'; id: infer Id } ? Id : never;
+}[number];

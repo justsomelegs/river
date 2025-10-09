@@ -15,6 +15,7 @@ const server = riverServer({
 
 	streams: (stream) => ({
 		aiChat: stream({
+			use: ['ai'],
 			chunkSchema: z.object({
 				delta: z.string()
 			}),
@@ -58,8 +59,6 @@ const server = riverServer({
 		})
 	})
 });
-
-
 
 export const POST = server.toEndpoint().POST;
 export const OPTIONS = server.toEndpoint().OPTIONS;
