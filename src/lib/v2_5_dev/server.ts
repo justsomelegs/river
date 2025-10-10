@@ -12,7 +12,7 @@ import type {
 	StreamBuilderFn,
 	StandardSchemaV1
 } from './types.js';
-import { createSseStream } from './sse.js';
+import { createSSEStream } from './sse.js';
 
 export function riverServer<
 	const P extends readonly RiverPlugin<any, any>[],
@@ -224,7 +224,7 @@ export function riverServer<
 					}
 				}
 
-				const stream = createSseStream(
+				const stream = createSSEStream(
 					async ({ send, abortSignal }) => {
 						const emit = (chunk: unknown): void => {
 							const result = def.chunkSchema['~standard'].validate(chunk);

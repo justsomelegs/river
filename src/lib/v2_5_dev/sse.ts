@@ -3,7 +3,7 @@ type SseStreamRunner = (helpers: {
 	abortSignal: AbortSignal;
 }) => Promise<void> | void;
 
-export function createSseStream(
+export function createSSEStream(
 	runner: SseStreamRunner,
 	abortController: AbortController,
 	options?: { heartbeatInterval?: number }

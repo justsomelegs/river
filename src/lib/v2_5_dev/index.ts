@@ -1,5 +1,5 @@
 export { riverServer } from './server.js';
-export { createSseStream } from './sse.js';
+export { createSSEStream as createSseStream } from './sse.js';
 export { ai } from './plugins/ai.js';
 export { createRiverPlugin } from './plugins/internal/create-river-plugin.js';
 export { defineContext } from './plugins/internal/plugin-context.js';
