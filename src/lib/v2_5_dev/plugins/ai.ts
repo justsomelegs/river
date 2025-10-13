@@ -1,10 +1,15 @@
-import type { LanguageModel, StreamTextResult, ToolSet, CoreMessage } from 'ai';
+import type {
+	LanguageModel,
+	StreamTextResult,
+	ToolSet,
+	CoreMessage,
+	TextStreamPart
+} from 'ai';
 import { streamText } from 'ai';
 import type { BaseStreamContext, RiverPlugin, PluginDescriptor } from '../types.js';
 import { createRiverPlugin } from './internal/create-river-plugin.js';
 import { defineContext } from './internal/plugin-context.js';
 
-// define then config shape if it needs one.
 export interface AIPluginConfig {
 	models: Record<string, LanguageModel>;
 	defaultModel?: string;
@@ -19,7 +24,17 @@ export interface StreamTextOptions<TOOLS extends ToolSet> {
 	tools?: TOOLS;
 }
 
-// define helper functions for the plugin.
+export type ToolEvent<TName extends string, TInput = unknown, TOutput = unknown> = {
+	type: 'tool';
+	toolName: TName;
+	input: TInput;
+	output?: TOutput;
+};
+
+export type NormalizedStreamPart<Tools extends ToolSet> =
+	| TextStreamPart<Tools>
+	| ToolEvent<string, unknown, unknown>;
+
 export interface AIHelpers {
 	streamText: <TOOLS extends ToolSet>(
 		options: StreamTextOptions<TOOLS>
@@ -27,13 +42,17 @@ export interface AIHelpers {
 
 	pipeTextStream: <T extends ToolSet>(
 		result: StreamTextResult<T, any>,
-		appendChunk: (chunk: string) => void,
+		appendChunk: (delta: string) => void,
+		abortSignal: AbortSignal
+	) => Promise<void>;
+
+	normalizeStream: <T extends ToolSet>(
+		result: StreamTextResult<T, any>,
+		appendChunk: (chunk: NormalizedStreamPart<T>) => void,
 		abortSignal: AbortSignal
 	) => Promise<void>;
 }
 
-// create helper functions that are passed onto the server
-// POTENTIAL TODO -> maybe refactor into an internal helper function so less type assignments are needed? not sure.
 const createAIHelpers = (config: AIPluginConfig, meta: BaseStreamContext): AIHelpers => {
 	const getAIModel = (modelId: string): LanguageModel => {
 		const model = config.models[modelId];
@@ -46,16 +65,20 @@ const createAIHelpers = (config: AIPluginConfig, meta: BaseStreamContext): AIHel
 		return model;
 	};
 
+	const coerceMessages = (prompt?: string, messages?: CoreMessage[]): CoreMessage[] => {
+		const output: CoreMessage[] = messages ? [...messages] : [];
+		if (prompt) {
+			output.push({ role: 'user', content: prompt });
+		}
+		return output;
+	};
+
 	return {
 		streamText: <T extends ToolSet>(options: StreamTextOptions<T>) => {
 			const model = getAIModel(options.model);
-			const messages: CoreMessage[] = options.messages ? [...options.messages] : [];
+			const messages = coerceMessages(options.prompt, options.messages);
 
-			if (options.prompt) {
-				messages.push({ role: 'user', content: options.prompt });
-			}
-
-			const result = streamText({
+			return streamText({
 				model,
 				messages,
 				system: options.system,
@@ -63,28 +86,54 @@ const createAIHelpers = (config: AIPluginConfig, meta: BaseStreamContext): AIHel
 				tools: options.tools,
 				abortSignal: meta.event.request.signal
 			});
-
-			return result;
 		},
 
 		pipeTextStream: async (result, appendChunk, abortSignal) => {
 			try {
 				for await (const chunk of result.textStream) {
-					if (abortSignal.aborted) {
-						break;
-					}
+					if (abortSignal.aborted) break;
 					appendChunk(chunk);
 				}
-			} catch (e) {
+			} catch (error) {
 				if (!abortSignal.aborted) {
-					throw e;
+					throw error;
+				}
+			}
+		},
+
+		normalizeStream: async (result, appendChunk, abortSignal) => {
+			try {
+				for await (const chunk of result.fullStream) {
+					if (abortSignal.aborted) break;
+
+					appendChunk(chunk);
+
+					if (chunk.type === 'tool-call' && !chunk.dynamic) {
+						appendChunk({
+							type: 'tool',
+							toolName: chunk.toolName,
+							input: chunk.input
+						});
+					}
+
+					if (chunk.type === 'tool-result' && !chunk.dynamic) {
+						appendChunk({
+							type: 'tool',
+							toolName: chunk.toolName,
+							input: chunk.input,
+							output: chunk.output
+						});
+					}
+				}
+			} catch (error) {
+				if (!abortSignal.aborted) {
+					throw error;
 				}
 			}
 		}
 	};
 };
 
-// assemble the pieces of the plugin.
 export function ai(): PluginDescriptor<AIPluginConfig, { ai: AIHelpers }, 'stream', 'ai'> {
 	return {
 		id: 'ai',

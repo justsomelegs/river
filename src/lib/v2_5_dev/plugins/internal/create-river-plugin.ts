@@ -19,7 +19,11 @@ export interface CreateRiverPluginInput<
 	onRequest?: Hook<'onRequest'>;
 	onChunk?: Hook<'onChunk'>;
 	onComplete?: Hook<'onComplete'>;
+	onStreamEnd?: Hook<'onStreamEnd'>;
 	extend?: (meta: BaseStreamContext) => Context;
+	onStreamInfo?: Hook<'onStreamInfo'>;
+	onHeartbeat?: Hook<'onHeartbeat'>;
+	transformChunk?: Hook<'transformChunk'>;
 }
 
 type WithoutContext<Scope extends RiverPluginScope = RiverPluginScope, Id extends string = string> = Omit<
@@ -51,6 +55,10 @@ export function createRiverPlugin<Context, Scope extends RiverPluginScope = Rive
 			onRequest: spec.onRequest,
 			onChunk: spec.onChunk,
 			onComplete: spec.onComplete,
+			onStreamEnd: spec.onStreamEnd,
+			onStreamInfo: spec.onStreamInfo,
+			onHeartbeat: spec.onHeartbeat,
+			transformChunk: spec.transformChunk,
 			extendRunnerContext: spec.extend
 		}) as RiverPluginReturn<Context, Scope, Id>;
 }
