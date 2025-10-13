@@ -3,56 +3,156 @@ import type {
 	StreamDefinition,
 	RiverPlugin,
 	StreamRunner,
-	RiverServerConfig,
+	RiverServerConfig as RiverServerOptions,
 	RiverPluginReturn,
 	PluginContext,
 	BaseStreamContext,
-	InferGlobalPluginsContext,
-	InferStreamPluginsContext,
+	InferGlobalPluginsContextFromDescriptors,
+	InferStreamPluginsContextFromDescriptors,
+	StreamPluginIdsFromDescriptors,
 	StreamBuilderFn,
-	StandardSchemaV1
+	StandardSchemaV1,
+	PluginDescriptor,
+	PluginDescriptorConfig,
+	PluginConfigsFromDescriptors,
+	ResolvePlugins,
+	BeforeRunArgs,
+	AfterRunArgs,
+	SafePluginContext
 } from './types.js';
 import { createSSEStream } from './sse.js';
 
 export function riverServer<
-	const P extends readonly RiverPlugin<any, any>[],
-	const T extends Record<string, any>
+	const P extends readonly PluginDescriptor<any, any, any, any>[]
 >(config: {
-	plugins?: P;
-	streams: (
-		stream: StreamBuilderFn<InferGlobalPluginsContext<P>, InferStreamPluginsContext<P>>
-	) => T;
-	options?: RiverServerConfig;
-}) {
-	const streamBuilder: StreamBuilderFn<
-		InferGlobalPluginsContext<P>,
-		InferStreamPluginsContext<P>
-	> = <C extends StandardSchemaV1, I extends StandardSchemaV1 | undefined = undefined>(
-		streamConfig: any
-	) => streamConfig as StreamDefinition<any, any, any>;
+	plugins: P;
+	options?: RiverServerOptions;
+} & PluginConfigsFromDescriptors<P>) {
+	const pluginIds = new Set(config.plugins.map((p: PluginDescriptor<any, any, any, any>) => p.id));
+	const configKeys = Object.keys(config).filter(key => key !== 'plugins' && key !== 'options');
+	for (const configKey of configKeys) {
+		if (!pluginIds.has(configKey)) {
+			throw new Error(`Invalid config key "${configKey}". Must match a plugin ID from plugins array.`);
+		}
+	}
 
-	const registry = config.streams(streamBuilder);
 	const plugins: RiverPluginReturn<any>[] = [];
-	const serverOptions = config.options || {};
+	const serverOptions: RiverServerOptions = config.options || {};
+
+	const globalPlugins = plugins.filter((p) => p.scope === 'global');
+	const streamPlugins = plugins.filter((p) => p.scope === 'stream');
+
+	const streamPluginMap = new Map(streamPlugins.map((p) => [p.id, p]));
+
+	const registry: Record<string, StreamDefinition<any, any, any>> = {};
 
 	const ctx: PluginContext = {
-		getStream: (name: string) => registry[name as keyof T]
+		getStream: (name: string) => registry[name]
 	};
 
-	const initPlugin = (p: RiverPlugin<any, any>) => {
-		const instance = p(ctx);
+	const initPlugin = (descriptor: PluginDescriptor<any, any, any, any>) => {
+		const pluginConfig = (config as any)[descriptor.id];
+		if (pluginConfig === undefined) {
+			throw new Error(`Missing configuration for plugin "${descriptor.id}". Expected a "${descriptor.id}" property in the server config.`);
+		}
+
+		const plugin = descriptor.createPlugin(pluginConfig);
+		const instance = plugin(ctx);
 		plugins.push(instance);
 		instance.onInit?.();
 	};
 
-	config.plugins?.forEach(initPlugin);
+	config.plugins.forEach(initPlugin);
 
-	// Create plugin maps by scope
-	const globalPlugins = plugins.filter((p) => p.scope === 'global');
-	const streamPlugins = plugins.filter((p) => p.scope === 'stream');
+	type GlobalCtx = InferGlobalPluginsContextFromDescriptors<P>;
+	type AllStreamCtx = InferStreamPluginsContextFromDescriptors<P>;
+	type StreamIds = StreamPluginIdsFromDescriptors<P>;
 
-	// Create map for quick lookup of stream plugins by ID
-	const streamPluginMap = new Map(streamPlugins.map((p) => [p.id, p]));
+	const createStream = <const Name extends string>(name: Name) => <
+		C extends StandardSchemaV1,
+		I extends StandardSchemaV1 | undefined = undefined,
+		const Use extends readonly string[] = readonly StreamIds[]
+	>(
+		config: I extends StandardSchemaV1
+			? {
+				use?: Use;
+				chunkSchema: C;
+				inputSchema: I;
+				runner: StreamRunner<
+					StandardSchemaV1.InferOutput<I>,
+					StandardSchemaV1.InferOutput<C>,
+					GlobalCtx & SafePluginContext<AllStreamCtx, Use, StreamIds>
+				>;
+				beforeRun?: (
+					args: BeforeRunArgs<
+						StandardSchemaV1.InferOutput<I>,
+						GlobalCtx & SafePluginContext<AllStreamCtx, Use, StreamIds>
+					>
+				) => Promise<StandardSchemaV1.InferOutput<I>> | StandardSchemaV1.InferOutput<I>;
+				afterRun?: (
+					args: AfterRunArgs<GlobalCtx & SafePluginContext<AllStreamCtx, Use, StreamIds>>
+				) => Promise<void> | void;
+			}
+			: {
+				use?: Use;
+				chunkSchema: C;
+				runner: StreamRunner<
+					unknown,
+					StandardSchemaV1.InferOutput<C>,
+					GlobalCtx & SafePluginContext<AllStreamCtx, Use, StreamIds>
+				>;
+				beforeRun?: (
+					args: BeforeRunArgs<
+						unknown,
+						GlobalCtx & SafePluginContext<AllStreamCtx, Use, StreamIds>
+					>
+				) => Promise<unknown> | unknown;
+				afterRun?: (
+					args: AfterRunArgs<GlobalCtx & SafePluginContext<AllStreamCtx, Use, StreamIds>>
+				) => Promise<void> | void;
+			}
+	): StreamDefinition<
+		I extends StandardSchemaV1 ? StandardSchemaV1.InferOutput<I> : unknown,
+		StandardSchemaV1.InferOutput<C>,
+		GlobalCtx & SafePluginContext<AllStreamCtx, Use, StreamIds>
+	> => {
+		if (registry[name]) {
+			throw new Error(`Stream "${name}" already defined.`);
+		}
+
+		const usePlugins = config.use ?? [];
+		const availableIds = new Set(streamPlugins.map((p) => p.id as string));
+		for (const id of usePlugins) {
+			const idStr = id as string;
+			if (!idStr || idStr.trim() === '') {
+				throw new Error(
+					`Stream "${name}" has invalid plugin ID: empty string. Available plugins: ${Array.from(
+						availableIds
+					).join(', ')}`
+				);
+			}
+			if (!availableIds.has(idStr)) {
+				throw new Error(
+					`Stream "${name}" uses unknown plugin "${idStr}". Available: ${Array.from(
+						availableIds
+					).join(', ')}`
+				);
+			}
+		}
+
+		const def = {
+			name,
+			use: config.use ?? [],
+			...config,
+		} as any;
+
+		registry[name] = def as any;
+		return def as StreamDefinition<
+			I extends StandardSchemaV1 ? StandardSchemaV1.InferOutput<I> : unknown,
+			StandardSchemaV1.InferOutput<C>,
+			GlobalCtx & SafePluginContext<AllStreamCtx, Use, StreamIds>
+		>;
+	};
 
 	const applyRunnerWrappers = <I, C>(
 		runner: StreamRunner<I, C, any>,
@@ -60,14 +160,12 @@ export function riverServer<
 	): StreamRunner<I, C, any> => {
 		let wrapped = runner;
 
-		// Apply global wrappers
 		for (const p of globalPlugins) {
 			if (p.wrapRunner) {
 				wrapped = p.wrapRunner(wrapped);
 			}
 		}
 
-		// Apply stream plugin wrappers if in use array
 		if (usePlugins) {
 			for (const pluginId of usePlugins) {
 				const plugin = streamPluginMap.get(pluginId);
@@ -83,7 +181,6 @@ export function riverServer<
 	const buildExtendedContext = (meta: BaseStreamContext, usePlugins?: readonly string[]): any => {
 		let extendedContext = {};
 
-		// Always include global plugins
 		for (const p of globalPlugins) {
 			if (p.extendRunnerContext) {
 				const pluginContext = p.extendRunnerContext(meta);
@@ -91,7 +188,6 @@ export function riverServer<
 			}
 		}
 
-		// Include stream plugins only if they're in the `use` array
 		if (usePlugins && usePlugins.length > 0) {
 			for (const pluginId of usePlugins) {
 				const plugin = streamPluginMap.get(pluginId);
@@ -130,8 +226,7 @@ export function riverServer<
 	};
 
 	return {
-		use: initPlugin,
-		// get: <K extends keyof T>(name: K): T[K] => registry[name] as T[K],
+		createStream,
 		toEndpoint: () => ({
 			async OPTIONS(event: RequestEvent) {
 				const corsHeaders = getCorsHeaders(event.request.headers.get('origin'));
@@ -168,15 +263,13 @@ export function riverServer<
 					});
 				}
 
-				const def = registry[name as keyof T] as StreamDefinition<any, any, any> | undefined;
+				const def = registry[name as keyof typeof registry] as StreamDefinition<any, any, any> | undefined;
 				if (!def) {
 					return new Response(JSON.stringify({ error: `Unknown stream: ${name}` }), {
 						status: 404,
 						headers: { 'Content-Type': 'application/json' }
 					});
 				}
-
-				// Potential future feature: middleware system for intercepting/transforming requests
 
 				let parsedInput: any = body?.input;
 				if (def.inputSchema) {
@@ -203,7 +296,6 @@ export function riverServer<
 				const extendedContext = buildExtendedContext(baseMeta, def.use);
 				const runId = crypto.randomUUID();
 
-				// Call beforeRun hook if defined
 				if (def.beforeRun) {
 					try {
 						parsedInput = await def.beforeRun({
@@ -281,13 +373,11 @@ export function riverServer<
 								console.error(`Stream "${name}" failed:`, e);
 							}
 						} finally {
-							// Call plugin onComplete hooks
 							const pluginStatus = status === 'canceled' ? 'error' : status;
 							for (const p of plugins) {
 								await p.onComplete?.(pluginStatus, name);
 							}
 
-							// Call afterRun hook if defined
 							if (def.afterRun) {
 								try {
 									await def.afterRun({
@@ -312,7 +402,7 @@ export function riverServer<
 					headers: {
 						'Content-Type': 'text/event-stream',
 						'Cache-Control': 'no-cache',
-						Connection: 'keep-alive',
+						'Connection': 'keep-alive',
 						'X-Accel-Buffering': 'no',
 						...corsHeaders
 					}

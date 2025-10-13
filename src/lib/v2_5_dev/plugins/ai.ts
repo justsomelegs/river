@@ -1,6 +1,6 @@
 import type { LanguageModel, StreamTextResult, ToolSet, CoreMessage } from 'ai';
 import { streamText } from 'ai';
-import type { BaseStreamContext, RiverPlugin } from '../types.js';
+import type { BaseStreamContext, RiverPlugin, PluginDescriptor } from '../types.js';
 import { createRiverPlugin } from './internal/create-river-plugin.js';
 import { defineContext } from './internal/plugin-context.js';
 
@@ -85,15 +85,20 @@ const createAIHelpers = (config: AIPluginConfig, meta: BaseStreamContext): AIHel
 };
 
 // assemble the pieces of the plugin.
-// (again this is could be a temporary API just messing around with things for now)
-export function ai(config: AIPluginConfig): RiverPlugin<{ ai: AIHelpers }, 'stream'> {
-	const context = defineContext({
-		ai: (meta) => createAIHelpers(config, meta)
-	});
-
-	return createRiverPlugin<{ ai: AIHelpers }, 'stream'>({
+export function ai(): PluginDescriptor<AIPluginConfig, { ai: AIHelpers }, 'stream', 'ai'> {
+	return {
 		id: 'ai',
 		scope: 'stream',
-		extend: (meta) => context.create(meta)
-	});
+		createPlugin: (config: AIPluginConfig) => {
+			const context = defineContext({
+				ai: (meta) => createAIHelpers(config, meta)
+			});
+
+			return createRiverPlugin<{ ai: AIHelpers }, 'stream', 'ai'>({
+				id: 'ai',
+				scope: 'stream',
+				extend: (meta) => context.create(meta)
+			});
+		}
+	};
 }

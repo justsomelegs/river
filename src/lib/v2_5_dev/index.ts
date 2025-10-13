@@ -20,6 +20,8 @@ export type {
 	BeforeRunArgs,
 	AfterRunArgs,
 	StandardSchemaV1,
+	PluginDescriptor,
+	PluginDescriptorConfig,
 	InferPluginContext,
 	InferPluginsContext,
 	InferGlobalPluginsContext,

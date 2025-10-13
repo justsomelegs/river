@@ -9,9 +9,10 @@ type Hook<K extends keyof RiverPluginReturn> = NonNullable<RiverPluginReturn[K]>
 
 export interface CreateRiverPluginInput<
 	Context,
-	Scope extends RiverPluginScope = RiverPluginScope
+	Scope extends RiverPluginScope = RiverPluginScope,
+	Id extends string = string
 > {
-	id: string;
+	id: Id;
 	scope: Scope;
 	init?: Hook<'onInit'>;
 	wrap?: Hook<'wrapRunner'>;
@@ -21,22 +22,22 @@ export interface CreateRiverPluginInput<
 	extend?: (meta: BaseStreamContext) => Context;
 }
 
-type WithoutContext<Scope extends RiverPluginScope = RiverPluginScope> = Omit<
-	CreateRiverPluginInput<Record<string, never>, Scope>,
+type WithoutContext<Scope extends RiverPluginScope = RiverPluginScope, Id extends string = string> = Omit<
+	CreateRiverPluginInput<Record<string, never>, Scope, Id>,
 	'extend'
 > & {
 	extend?: undefined;
 };
 
-export function createRiverPlugin<Scope extends RiverPluginScope>(
-	spec: WithoutContext<Scope>
-): RiverPlugin<Record<string, never>, Scope>;
-export function createRiverPlugin<Context, Scope extends RiverPluginScope = RiverPluginScope>(
-	spec: CreateRiverPluginInput<Context, Scope>
-): RiverPlugin<Context, Scope>;
-export function createRiverPlugin<Context, Scope extends RiverPluginScope = RiverPluginScope>(
-	spec: CreateRiverPluginInput<Context, Scope>
-): RiverPlugin<Context, Scope> {
+export function createRiverPlugin<Scope extends RiverPluginScope, Id extends string>(
+	spec: WithoutContext<Scope, Id>
+): RiverPlugin<Record<string, never>, Scope, Id>;
+export function createRiverPlugin<Context, Scope extends RiverPluginScope = RiverPluginScope, Id extends string = string>(
+	spec: CreateRiverPluginInput<Context, Scope, Id>
+): RiverPlugin<Context, Scope, Id>;
+export function createRiverPlugin<Context, Scope extends RiverPluginScope = RiverPluginScope, Id extends string = string>(
+	spec: CreateRiverPluginInput<Context, Scope, Id>
+): RiverPlugin<Context, Scope, Id> {
 	if (!spec.id) {
 		throw new Error('Plugin requires a stable id');
 	}
@@ -51,5 +52,5 @@ export function createRiverPlugin<Context, Scope extends RiverPluginScope = Rive
 			onChunk: spec.onChunk,
 			onComplete: spec.onComplete,
 			extendRunnerContext: spec.extend
-		}) as RiverPluginReturn<Context, Scope>;
+		}) as RiverPluginReturn<Context, Scope, Id>;
 }
