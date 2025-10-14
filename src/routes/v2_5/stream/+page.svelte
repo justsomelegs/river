@@ -1,6 +1,41 @@
 <script lang="ts">
 	import type { River } from './+server.js';
-	import { createRiverClient } from '$lib/v2_5_dev/index.js';
+	import type { StreamCompletionSummary } from '$lib/v2_5_dev/types.js';
+	import { createRiverClient } from '$lib/v2_5_dev/client/index.js';
+
+	type TextAnalyzerChunk = {
+		index: number;
+		word: string;
+		normalized: string;
+		length: number;
+		vowels: number;
+		consonants: number;
+		isPalindrome: boolean;
+	};
+
+	type AIWorkbenchChunk =
+		| {
+				type: 'assistant-text';
+				text?: string;
+		  }
+		| {
+				type: 'tool-call';
+				toolName?: string;
+				toolInput?: unknown;
+		  }
+		| {
+				type: 'tool-result';
+				toolName?: string;
+				toolOutput?: unknown;
+				toolInput?: unknown;
+		  }
+		| { type: 'done' };
+
+	type DiagnosticsChunk = {
+		stage: 'start' | 'running' | 'completed';
+		message: string;
+		ts: number;
+	};
 
 	const client = createRiverClient<River>({
 		endpoint: '/v2_5/stream',
@@ -11,407 +46,603 @@
 		}
 	});
 
-	const vowelCounter = client.stream.vowelCounter({
+	/* Text Analyzer */
+	const textAnalyzer = client.stream.textAnalyzer({
 		onStart() {
-			vowelStatus = 'running';
-			vowelChunks = [];
-			vowelError = null;
+			analyzerStatus = 'running';
+			analyzerChunks = [];
+			analyzerSummary = null;
+			analyzerError = null;
 		},
 		onChunk(chunk) {
-			vowelChunks.push(chunk);
+			analyzerChunks.push(chunk);
 		},
 		onComplete(summary) {
-			vowelStatus = summary.status;
+			analyzerStatus = summary.status;
+			analyzerSummary = summary;
 		},
 		onCancel() {
-			vowelStatus = 'canceled';
+			analyzerStatus = 'canceled';
 		},
 		onError(error) {
-			vowelStatus = 'error';
-			vowelError = error instanceof Error ? error.message : 'Unknown error';
-		},
-		onStreamInfo() {}
-	});
-
-	let vowelStatus = $state<string>('idle');
-	let vowelChunks = $state<any[]>([]);
-	let vowelError = $state<string | null>(null);
-	let vowelInput = $state('Hello World');
-
-	const questionAsker = client.stream.questionAsker({
-		onStart() {
-			qaStatus = 'running';
-			qaChunks = [];
-			qaError = null;
-		},
-		onChunk(chunk) {
-			qaChunks.push(chunk);
-		},
-		onComplete(summary) {
-			qaStatus = summary.status;
-		},
-		onCancel() {
-			qaStatus = 'canceled';
-		},
-		onError(error) {
-			qaStatus = 'error';
-			qaError = error instanceof Error ? error.message : 'Unknown error';
+			analyzerStatus = 'error';
+			analyzerError = error instanceof Error ? error.message : 'Unknown error';
 		}
 	});
 
-	let qaStatus = $state<string>('idle');
-	let qaChunks = $state<any[]>([]);
-	let qaError = $state<string | null>(null);
-	let qaInput = $state('What is the capital of France?');
+	let analyzerStatus = $state<string>('idle');
+	let analyzerChunks = $state<TextAnalyzerChunk[]>([]);
+	let analyzerSummary = $state<StreamCompletionSummary | null>(null);
+	let analyzerError = $state<string | null>(null);
+	let analyzerPhrase = $state('River v2.5 showcases resumable streams and plugins.');
+	let analyzerRepeat = $state(1);
+	let analyzerUppercase = $state(false);
 
-	const simpleChat = client.stream.simpleChat({
+	/* AI Workbench */
+	const aiWorkbench = client.stream.aiWorkbench({
 		onStart() {
-			chatStatus = 'running';
-			chatText = '';
-			chatError = null;
+			aiStatus = 'running';
+			aiChunks = [];
+			aiError = null;
 		},
 		onChunk(chunk) {
-			chatText += chunk;
+			aiChunks.push(chunk);
 		},
 		onComplete(summary) {
-			chatStatus = summary.status;
+			aiStatus = summary.status;
 		},
 		onCancel() {
-			chatStatus = 'canceled';
+			aiStatus = 'canceled';
 		},
 		onError(error) {
-			chatStatus = 'error';
-			chatError = error instanceof Error ? error.message : 'Unknown error';
+			aiStatus = 'error';
+			aiError = error instanceof Error ? error.message : 'Unknown error';
 		}
 	});
 
-	let chatStatus = $state<string>('idle');
-	let chatText = $state('');
-	let chatError = $state<string | null>(null);
-	let chatInput = $state('Tell me a joke');
+	let aiStatus = $state<string>('idle');
+	let aiChunks = $state<AIWorkbenchChunk[]>([]);
+	let aiError = $state<string | null>(null);
+	let aiPrompt = $state('Summarise the key ideas behind River v2.5 for a senior engineer.');
+	let aiTone = $state<'neutral' | 'playful' | 'serious'>('neutral');
+	let aiRequireTool = $state(true);
 
-	let resumableStatus = $state<string>('idle');
-	let resumableChunks = $state<Array<{ chunk: any; isNew: boolean }>>([]);
-	let resumableError = $state<string | null>(null);
-	let resumableRunId = $state<string | null>(null);
-	let resumableUseStableId = $state(true); // Enable resumability
-	let resumableStableId = $state('demo-resumable-session-1');
-	let resumableKeepOldChunks = $state(true); // Toggle to keep old chunks
-
-	const resumableStream = client.stream.resumableStream({
+	/* Resumable Transcript */
+	const transcriptStream = client.stream.resumableTranscript({
 		onStart() {
-			resumableStatus = 'running';
-			if (!resumableKeepOldChunks) {
-				resumableChunks = [];
+			transcriptStatus = 'running';
+			if (!transcriptKeepHistory) {
+				transcriptChunks = [];
 			} else {
-				// Mark existing chunks as old
-				resumableChunks = resumableChunks.map((c) => ({ ...c, isNew: false }));
+				transcriptChunks = transcriptChunks.map((item) => ({ ...item, isNew: false }));
 			}
-			resumableError = null;
+			transcriptError = null;
 		},
 		onChunk(chunk) {
-			resumableChunks.push({ chunk, isNew: true });
+			transcriptChunks.push({ chunk, isNew: true });
 		},
 		onComplete(summary) {
-			resumableStatus = summary.status;
-			resumableRunId = summary.runId; // Save runId for potential resumption
+			transcriptStatus = summary.status;
+			transcriptRunId = summary.runId;
+			transcriptKnownTotal = summary.totalChunks;
+			if (summary.totalChunks > transcriptTargetCount) {
+				transcriptTargetCount = summary.totalChunks;
+			}
 		},
 		onCancel() {
-			resumableStatus = 'canceled';
+			transcriptStatus = 'canceled';
 		},
 		onError(error) {
-			resumableStatus = 'error';
-			resumableError = error instanceof Error ? error.message : 'Unknown error';
+			transcriptStatus = 'error';
+			transcriptError = error instanceof Error ? error.message : 'Unknown error';
 		},
 		onStreamInfo(info) {
-			resumableRunId = info.runId;
+			transcriptRunId = info.runId;
 		}
 	});
+
+	let transcriptStatus = $state<string>('idle');
+	let transcriptChunks = $state<Array<{ chunk: { index: number; data: string }; isNew: boolean }>>(
+		[]
+	);
+	let transcriptError = $state<string | null>(null);
+	let transcriptRunId = $state<string | null>(null);
+	let transcriptKeepHistory = $state(true);
+	let transcriptUseStableId = $state(true);
+	let transcriptStableId = $state('river-v2_5-resume');
+	let transcriptTargetCount = $state(30);
+	let transcriptKnownTotal = $state(0);
+
+	const startTranscript = (count: number, runId?: string) => {
+		const target = Math.max(transcriptKnownTotal, Math.max(1, count));
+		transcriptTargetCount = target;
+		transcriptStream.start({ count: target }, { runId });
+	};
+
+	/* Diagnostics Stream */
+	const diagnosticsStream = client.stream.diagnosticsStream({
+		onStart() {
+			diagnosticsStatus = 'running';
+			diagnosticsChunks = [];
+			diagnosticsError = null;
+			diagnosticsSummary = null;
+		},
+		onChunk(chunk) {
+			diagnosticsChunks.push(chunk as DiagnosticsChunk);
+		},
+		onComplete(summary) {
+			diagnosticsStatus = summary.status;
+			diagnosticsSummary = summary;
+		},
+		onCancel() {
+			diagnosticsStatus = 'canceled';
+		},
+		onError(error) {
+			diagnosticsStatus = 'error';
+			diagnosticsError = error instanceof Error ? error.message : 'Unknown error';
+		}
+	});
+
+	let diagnosticsStatus = $state<string>('idle');
+	let diagnosticsChunks = $state<DiagnosticsChunk[]>([]);
+	let diagnosticsError = $state<string | null>(null);
+	let diagnosticsSummary = $state<StreamCompletionSummary | null>(null);
+	let diagnosticsMode = $state<'success' | 'fail-chunk' | 'throw-error'>('fail-chunk');
 </script>
 
-<div class="mx-auto max-w-4xl space-y-6 p-6">
+<div class="mx-auto grid max-w-5xl gap-6 p-6">
 	<div class="space-y-2">
-		<h1 class="text-3xl font-bold">v2.5 River Stream Tests</h1>
+		<h1 class="text-3xl font-bold">River v2.5 Demo Suite</h1>
 		<p class="text-neutral-400">
-			Comprehensive tests demonstrating v2.5 has full parity with v3 (and more!)
+			Hands-on scenarios covering validation, plugins, AI tooling, resumable storage, and error
+			handling in the v2.5 server/client runtime.
 		</p>
 	</div>
 
-	<!-- Vowel Counter Test -->
-	<div class="space-y-3 rounded-lg border border-neutral-700 bg-neutral-900 p-4">
-		<h2 class="text-xl font-semibold">Vowel Counter Test</h2>
-		<p class="text-sm text-neutral-400">Custom stream with beforeRun/afterRun hooks</p>
+	<section class="space-y-3 rounded-lg border border-neutral-700 bg-neutral-900 p-4">
+		<header class="space-y-1">
+			<h2 class="text-xl font-semibold">1. Text Analyzer (validation + plugin context)</h2>
+			<p class="text-sm text-neutral-400">
+				Checks schema validation, before/after hooks, throttling, and run metrics logging.
+			</p>
+		</header>
 
-		<div class="flex gap-2">
+		<div class="flex flex-wrap gap-2">
 			<input
-				bind:value={vowelInput}
-				placeholder="Enter text..."
+				bind:value={analyzerPhrase}
 				class="flex-1 rounded border border-neutral-700 bg-neutral-800 px-3 py-2"
-				disabled={vowelStatus === 'running'}
+				placeholder="Text to analyze..."
+				disabled={analyzerStatus === 'running'}
 			/>
-			<button
-				onclick={() => vowelCounter.start({ yourName: vowelInput })}
-				disabled={vowelStatus === 'running'}
-				class="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
-			>
-				{vowelStatus === 'running' ? 'Running...' : 'Start'}
-			</button>
-			<button
-				onclick={() => vowelCounter.stop()}
-				disabled={vowelStatus !== 'running'}
-				class="rounded bg-red-600 px-4 py-2 text-white disabled:opacity-50"
-			>
-				Stop
-			</button>
-		</div>
-
-		<div class="text-sm">
-			Status: <span class="rounded bg-neutral-800 px-2 py-1">{vowelStatus}</span>
-			Chunks: <span class="rounded bg-neutral-800 px-2 py-1">{vowelChunks.length}</span>
-		</div>
-
-		{#if vowelError}
-			<div class="rounded bg-red-900/30 p-2 text-red-200">{vowelError}</div>
-		{/if}
-
-		{#if vowelChunks.length > 0}
-			<div class="grid grid-cols-8 gap-2">
-				{#each vowelChunks as chunk}
-					<div
-						class="rounded p-2 text-center text-sm"
-						class:bg-green-900={chunk.isVowel}
-						class:bg-neutral-700={!chunk.isVowel}
-					>
-						{chunk.letter}
-					</div>
-				{/each}
-			</div>
-		{/if}
-	</div>
-
-	<!-- Question Asker Test (AI SDK with Tools) -->
-	<div class="space-y-3 rounded-lg border border-neutral-700 bg-neutral-900 p-4">
-		<h2 class="text-xl font-semibold">Question Asker Test (AI SDK + Tools)</h2>
-		<p class="text-sm text-neutral-400">AI SDK integration with tool support</p>
-
-		<div class="flex gap-2">
-			<input
-				bind:value={qaInput}
-				placeholder="Ask a question..."
-				class="flex-1 rounded border border-neutral-700 bg-neutral-800 px-3 py-2"
-				disabled={qaStatus === 'running'}
-			/>
-			<button
-				onclick={() => questionAsker.start({ prompt: qaInput })}
-				disabled={qaStatus === 'running'}
-				class="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
-			>
-				{qaStatus === 'running' ? 'Running...' : 'Ask'}
-			</button>
-			<button
-				onclick={() => questionAsker.stop()}
-				disabled={qaStatus !== 'running'}
-				class="rounded bg-red-600 px-4 py-2 text-white disabled:opacity-50"
-			>
-				Stop
-			</button>
-		</div>
-
-		<div class="text-sm">
-			Status: <span class="rounded bg-neutral-800 px-2 py-1">{qaStatus}</span>
-			Chunks: <span class="rounded bg-neutral-800 px-2 py-1">{qaChunks.length}</span>
-		</div>
-
-		{#if qaError}
-			<div class="rounded bg-red-900/30 p-2 text-red-200">{qaError}</div>
-		{/if}
-
-		{#if qaChunks.length > 0}
-			<div class="max-h-96 space-y-2 overflow-y-auto rounded bg-neutral-800 p-3">
-				{#each qaChunks as chunk}
-					<div class="text-sm">
-						{#if chunk.type === 'text-delta'}
-							<span>{chunk.text}</span>
-						{:else if chunk.type === 'tool-call'}
-							<div class="rounded bg-blue-900/30 p-2">
-								🔧 Tool Call: {chunk.toolName}
-							</div>
-						{:else if chunk.type === 'tool-result'}
-							<div class="rounded bg-green-900/30 p-2">
-								✅ Tool Result: {JSON.stringify(chunk.output)}
-							</div>
-						{:else if chunk.type === 'tool'}
-							<div class="rounded bg-purple-900/30 p-2">
-								🔨 {chunk.toolName}: {JSON.stringify(chunk.output || chunk.input)}
-							</div>
-						{/if}
-					</div>
-				{/each}
-			</div>
-		{/if}
-	</div>
-
-	<!-- Simple Chat Test -->
-	<div class="space-y-3 rounded-lg border border-neutral-700 bg-neutral-900 p-4">
-		<h2 class="text-xl font-semibold">Simple Chat Test</h2>
-		<p class="text-sm text-neutral-400">Text-only AI SDK streaming with pipeTextStream</p>
-
-		<div class="flex gap-2">
-			<input
-				bind:value={chatInput}
-				placeholder="Send a message..."
-				class="flex-1 rounded border border-neutral-700 bg-neutral-800 px-3 py-2"
-				disabled={chatStatus === 'running'}
-			/>
-			<button
-				onclick={() => simpleChat.start({ message: chatInput })}
-				disabled={chatStatus === 'running'}
-				class="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
-			>
-				{chatStatus === 'running' ? 'Running...' : 'Send'}
-			</button>
-			<button
-				onclick={() => simpleChat.stop()}
-				disabled={chatStatus !== 'running'}
-				class="rounded bg-red-600 px-4 py-2 text-white disabled:opacity-50"
-			>
-				Stop
-			</button>
-		</div>
-
-		<div class="text-sm">
-			Status: <span class="rounded bg-neutral-800 px-2 py-1">{chatStatus}</span>
-		</div>
-
-		{#if chatError}
-			<div class="rounded bg-red-900/30 p-2 text-red-200">{chatError}</div>
-		{/if}
-
-		{#if chatText}
-			<div class="rounded bg-neutral-800 p-3">
-				<p class="whitespace-pre-wrap">{chatText}</p>
-			</div>
-		{/if}
-	</div>
-
-	<!-- Resumable Stream Test -->
-	<div class="space-y-3 rounded-lg border border-neutral-700 bg-neutral-900 p-4">
-		<h2 class="text-xl font-semibold">In-Memory Storage Test</h2>
-		<p class="text-sm text-neutral-400">
-			Stream with in-memory storage - chunks persist across the session. Check browser console for
-			storage logs!
-		</p>
-		<div class="space-y-2 rounded border border-blue-800 bg-blue-900/20 p-2 text-xs">
-			<div>
-				<strong>Demo:</strong> Click "Stop" mid-stream, then "Start" again to see resumption in action.
-			</div>
-			<label class="flex items-center gap-2">
-				<input type="checkbox" bind:checked={resumableUseStableId} class="rounded" />
-				<span>Use stable runId (enables resumption)</span>
-			</label>
-			{#if resumableUseStableId}
+			<label class="flex items-center gap-2 text-sm text-neutral-300">
+				<span>Repeat:</span>
 				<input
-					bind:value={resumableStableId}
-					placeholder="Stable runId..."
-					class="w-full rounded border border-blue-700 bg-blue-950 px-2 py-1 font-mono text-xs"
+					type="range"
+					min="1"
+					max="5"
+					bind:value={analyzerRepeat}
+					disabled={analyzerStatus === 'running'}
 				/>
-			{/if}
-			<label class="flex items-center gap-2">
-				<input type="checkbox" bind:checked={resumableKeepOldChunks} class="rounded" />
-				<span>Keep old chunks on resume (visualize history)</span>
+				<span class="w-6 text-right">{analyzerRepeat}</span>
+			</label>
+			<label class="flex items-center gap-2 text-sm text-neutral-300">
+				<input
+					type="checkbox"
+					bind:checked={analyzerUppercase}
+					disabled={analyzerStatus === 'running'}
+				/>
+				<span>Uppercase first</span>
 			</label>
 		</div>
 
 		<div class="flex gap-2">
 			<button
-				onclick={() => {
-					const runId = resumableUseStableId ? resumableStableId : undefined;
-					resumableStream.start({ count: 40 }, { runId });
-				}}
-				disabled={resumableStatus === 'running'}
 				class="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={analyzerStatus === 'running'}
+				onclick={() =>
+					textAnalyzer.start({
+						phrase: analyzerPhrase,
+						repeat: Number(analyzerRepeat),
+						uppercase: analyzerUppercase
+					})}
 			>
-				{resumableStatus === 'running' ? 'Running...' : 'Start'}
+				{analyzerStatus === 'running' ? 'Running…' : 'Start'}
 			</button>
 			<button
-				onclick={() => resumableStream.stop()}
-				disabled={resumableStatus !== 'running'}
 				class="rounded bg-red-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={analyzerStatus !== 'running'}
+				onclick={() => textAnalyzer.stop()}
 			>
 				Stop
 			</button>
 			<button
-				onclick={() => {
-					resumableChunks = [];
-					resumableStatus = 'idle';
-					resumableError = null;
-				}}
-				disabled={resumableStatus === 'running'}
 				class="rounded bg-neutral-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={analyzerStatus === 'running'}
+				onclick={() => {
+					analyzerChunks = [];
+					analyzerSummary = null;
+					analyzerError = null;
+					analyzerStatus = 'idle';
+				}}
 			>
 				Clear
 			</button>
 		</div>
 
-		<div class="space-y-1 text-sm">
+		<div class="text-sm text-neutral-300">
 			<div>
-				Status: <span class="rounded bg-neutral-800 px-2 py-1">{resumableStatus}</span>
-				Chunks: <span class="rounded bg-neutral-800 px-2 py-1">{resumableChunks.length}</span>
+				Status: <span class="rounded bg-neutral-800 px-2 py-1">{analyzerStatus}</span>
+				Chunks: <span class="rounded bg-neutral-800 px-2 py-1">{analyzerChunks.length}</span>
 			</div>
-			{#if resumableRunId}
-				<div class="font-mono text-xs text-neutral-500">
-					runId: {resumableRunId.slice(0, 8)}...
+			{#if analyzerSummary}
+				<div class="text-xs text-neutral-500">
+					runId: {analyzerSummary.runId.slice(0, 8)}… · duration: {analyzerSummary.durationMs}ms
 				</div>
 			{/if}
 		</div>
 
-		{#if resumableError}
-			<div class="rounded bg-red-900/30 p-2 text-red-200">{resumableError}</div>
+		{#if analyzerError}
+			<div class="rounded bg-red-900/30 p-2 text-red-200">{analyzerError}</div>
 		{/if}
 
-		{#if resumableChunks.length > 0}
-			<div class="mb-2 flex items-center gap-4 text-xs">
-				<div class="flex items-center gap-1">
-					<div class="h-3 w-3 rounded bg-neutral-700"></div>
-					<span>Old chunks</span>
-				</div>
-				<div class="flex items-center gap-1">
-					<div class="h-3 w-3 rounded bg-green-700"></div>
-					<span>New chunks (this session)</span>
-				</div>
+		{#if analyzerChunks.length > 0}
+			<div class="overflow-x-auto rounded border border-neutral-800">
+				<table class="w-full text-left text-sm">
+					<thead class="bg-neutral-800 text-xs text-neutral-400 uppercase">
+						<tr>
+							<th class="px-3 py-2">#</th>
+							<th class="px-3 py-2">Word</th>
+							<th class="px-3 py-2">Normalized</th>
+							<th class="px-3 py-2">Len</th>
+							<th class="px-3 py-2">Vowels</th>
+							<th class="px-3 py-2">Consonants</th>
+							<th class="px-3 py-2">Palindrome?</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each analyzerChunks as chunk}
+							<tr class="border-t border-neutral-800">
+								<td class="px-3 py-2 text-neutral-500">{chunk.index}</td>
+								<td class="px-3 py-2">{chunk.word}</td>
+								<td class="px-3 py-2 font-mono text-xs text-neutral-400">
+									{chunk.normalized}
+								</td>
+								<td class="px-3 py-2">{chunk.length}</td>
+								<td class="px-3 py-2">{chunk.vowels}</td>
+								<td class="px-3 py-2">{chunk.consonants}</td>
+								<td class="px-3 py-2">
+									{chunk.isPalindrome ? 'Yes' : 'No'}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
 			</div>
-			<div class="grid grid-cols-5 gap-2">
-				{#each resumableChunks as item}
-					<div
-						class="rounded p-2 text-center text-sm {item.isNew
-							? 'bg-green-700'
-							: 'bg-neutral-700 opacity-60'}"
+		{/if}
+	</section>
+
+	<section class="space-y-3 rounded-lg border border-neutral-700 bg-neutral-900 p-4">
+		<header class="space-y-1">
+			<h2 class="text-xl font-semibold">2. AI Workbench (AI plugin + tool calls)</h2>
+			<p class="text-sm text-neutral-400">
+				Streams AI output while surfacing tool-call and tool-result chunks from the AI plugin.
+			</p>
+		</header>
+
+		<div class="grid gap-3 md:grid-cols-[2fr_1fr]">
+			<!-- svelte-ignore element_invalid_self_closing_tag -->
+			<textarea
+				bind:value={aiPrompt}
+				class="min-h-[120px] rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm"
+				placeholder="Ask the assistant something…"
+				disabled={aiStatus === 'running'}
+			/>
+			<div class="space-y-2 text-sm text-neutral-300">
+				<label class="flex items-center justify-between gap-2">
+					<span>Tone</span>
+					<select
+						bind:value={aiTone}
+						class="rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
+						disabled={aiStatus === 'running'}
 					>
-						{item.chunk.index}: {item.chunk.data}
+						<option value="neutral">Neutral</option>
+						<option value="playful">Playful</option>
+						<option value="serious">Serious</option>
+					</select>
+				</label>
+				<label class="flex items-center justify-between gap-2">
+					<span>Enable fact-check tool</span>
+					<input type="checkbox" bind:checked={aiRequireTool} disabled={aiStatus === 'running'} />
+				</label>
+			</div>
+		</div>
+
+		<div class="flex gap-2">
+			<button
+				class="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={aiStatus === 'running'}
+				onclick={() =>
+					aiWorkbench.start({
+						prompt: aiPrompt,
+						tone: aiTone,
+						requireTool: aiRequireTool
+					})}
+			>
+				{aiStatus === 'running' ? 'Streaming…' : 'Start'}
+			</button>
+			<button
+				class="rounded bg-red-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={aiStatus !== 'running'}
+				onclick={() => aiWorkbench.stop()}
+			>
+				Stop
+			</button>
+			<button
+				class="rounded bg-neutral-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={aiStatus === 'running'}
+				onclick={() => {
+					aiChunks = [];
+					aiError = null;
+					aiStatus = 'idle';
+				}}
+			>
+				Clear
+			</button>
+		</div>
+
+		<div class="text-sm text-neutral-300">
+			Status: <span class="rounded bg-neutral-800 px-2 py-1">{aiStatus}</span>
+			Chunks: <span class="rounded bg-neutral-800 px-2 py-1">{aiChunks.length}</span>
+		</div>
+
+		{#if aiError}
+			<div class="rounded bg-red-900/30 p-2 text-red-200">{aiError}</div>
+		{/if}
+
+		{#if aiChunks.length > 0}
+			<div class="space-y-2 rounded border border-neutral-800 bg-neutral-950/60 p-3 text-sm">
+				{#each aiChunks as chunk, index}
+					<div class="space-y-1 rounded border border-neutral-800 bg-neutral-900 p-2">
+						<div class="flex items-center justify-between text-xs text-neutral-500">
+							<span>#{index + 1}</span>
+							<span class="uppercase">{chunk.type}</span>
+						</div>
+						{#if chunk.type === 'assistant-text'}
+							<p class="whitespace-pre-wrap text-neutral-200">{chunk.text}</p>
+						{:else if chunk.type === 'tool-call'}
+							<p class="font-mono text-xs text-blue-300">
+								tool-call → {chunk.toolName}: {JSON.stringify(chunk.toolInput)}
+							</p>
+						{:else if chunk.type === 'tool-result'}
+							<div class="space-y-1 font-mono text-xs text-green-300">
+								<div>tool-result ← {chunk.toolName}</div>
+								<div>{JSON.stringify(chunk.toolOutput)}</div>
+							</div>
+						{:else if chunk.type === 'done'}
+							<p class="text-xs text-neutral-500">Stream completed.</p>
+						{/if}
 					</div>
 				{/each}
 			</div>
 		{/if}
-	</div>
+	</section>
 
-	<!-- Feature Checklist -->
-	<div class="rounded-lg border border-green-700 bg-green-900/20 p-4">
-		<h2 class="mb-3 text-xl font-semibold text-green-400">✅ V2.5 Feature Parity Checklist</h2>
+	<section class="space-y-3 rounded-lg border border-neutral-700 bg-neutral-900 p-4">
+		<header class="space-y-1">
+			<h2 class="text-xl font-semibold">3. Resumable Transcript (storage + resume)</h2>
+			<p class="text-sm text-neutral-400">
+				In-memory storage adapter with resumable runIds. Stop mid-stream and continue from where you
+				left off.
+			</p>
+		</header>
+
+		<div class="space-y-2 rounded border border-blue-800 bg-blue-900/20 p-2 text-xs">
+			<div>
+				<strong>Tip:</strong> Run with a stable runId, stop mid-way, then resume or extend the target
+				count.
+			</div>
+			<label class="flex items-center gap-2">
+				<input type="checkbox" bind:checked={transcriptUseStableId} class="rounded" />
+				<span>Use stable runId (enables resumption)</span>
+			</label>
+			{#if transcriptUseStableId}
+				<input
+					bind:value={transcriptStableId}
+					class="w-full rounded border border-blue-700 bg-blue-950 px-2 py-1 font-mono text-xs"
+					placeholder="Stable runId…"
+				/>
+			{/if}
+			<label class="flex items-center gap-2">
+				<input type="checkbox" bind:checked={transcriptKeepHistory} class="rounded" />
+				<span>Keep old chunks on resume (highlight new ones)</span>
+			</label>
+			<div class="flex flex-wrap items-center gap-2">
+				<!-- svelte-ignore a11y_label_has_associated_control -->
+				<label class="text-neutral-300">Target chunks:</label>
+				<input
+					type="number"
+					min="1"
+					bind:value={transcriptTargetCount}
+					class="w-24 rounded border border-blue-700 bg-blue-950 px-2 py-1 text-xs"
+				/>
+				<button
+					class="rounded bg-blue-700 px-3 py-1 text-white disabled:opacity-50"
+					disabled={transcriptStatus === 'running' || (!transcriptUseStableId && !transcriptRunId)}
+					onclick={() => {
+						const next = Math.max(Number(transcriptTargetCount) || 0, transcriptKnownTotal) + 10;
+						startTranscript(
+							next,
+							transcriptUseStableId ? transcriptStableId : (transcriptRunId ?? undefined)
+						);
+					}}
+				>
+					Continue +10
+				</button>
+			</div>
+		</div>
+
+		<div class="flex gap-2">
+			<button
+				class="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={transcriptStatus === 'running'}
+				onclick={() =>
+					startTranscript(
+						Number(transcriptTargetCount) || 0,
+						transcriptUseStableId ? transcriptStableId : undefined
+					)}
+			>
+				{transcriptStatus === 'running' ? 'Streaming…' : 'Start'}
+			</button>
+			<button
+				class="rounded bg-red-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={transcriptStatus !== 'running'}
+				onclick={() => transcriptStream.stop()}
+			>
+				Stop
+			</button>
+			<button
+				class="rounded bg-neutral-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={transcriptStatus === 'running'}
+				onclick={() => {
+					transcriptChunks = [];
+					transcriptStatus = 'idle';
+					transcriptError = null;
+					transcriptKnownTotal = 0;
+				}}
+			>
+				Clear
+			</button>
+		</div>
+
+		<div class="space-y-1 text-sm text-neutral-300">
+			<div>
+				Status: <span class="rounded bg-neutral-800 px-2 py-1">{transcriptStatus}</span>
+				Chunks: <span class="rounded bg-neutral-800 px-2 py-1">{transcriptChunks.length}</span>
+				Stored total:
+				<span class="rounded bg-neutral-800 px-2 py-1">{transcriptKnownTotal}</span>
+			</div>
+			{#if transcriptRunId}
+				<div class="font-mono text-xs text-neutral-500">
+					runId: {transcriptRunId.slice(0, 10)}…
+				</div>
+			{/if}
+		</div>
+
+		{#if transcriptError}
+			<div class="rounded bg-red-900/30 p-2 text-red-200">{transcriptError}</div>
+		{/if}
+
+		{#if transcriptChunks.length > 0}
+			<div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+				{#each transcriptChunks as item}
+					<div
+						class="rounded border border-neutral-800 p-2 text-sm"
+						class:bg-green-800={item.isNew}
+						class:bg-neutral-800={!item.isNew}
+					>
+						<div class="text-xs text-neutral-400">#{item.chunk.index}</div>
+						<div>{item.chunk.data}</div>
+						<div class="text-[10px] text-neutral-500">
+							{item.isNew ? 'new chunk' : 'cached'}
+						</div>
+					</div>
+				{/each}
+			</div>
+		{/if}
+	</section>
+
+	<section class="space-y-3 rounded-lg border border-neutral-700 bg-neutral-900 p-4">
+		<header class="space-y-1">
+			<h2 class="text-xl font-semibold">4. Diagnostics Stream (error paths)</h2>
+			<p class="text-sm text-neutral-400">
+				Trigger validation failures or thrown errors to exercise error, cancel, and success paths.
+			</p>
+		</header>
+
+		<div class="flex flex-wrap items-center gap-2 text-sm text-neutral-300">
+			<label class="flex items-center gap-2">
+				<span>Mode</span>
+				<select
+					bind:value={diagnosticsMode}
+					class="rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
+					disabled={diagnosticsStatus === 'running'}
+				>
+					<option value="success">Success</option>
+					<option value="fail-chunk">Fail chunk validation</option>
+					<option value="throw-error">Throw error</option>
+				</select>
+			</label>
+		</div>
+
+		<div class="flex gap-2">
+			<button
+				class="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={diagnosticsStatus === 'running'}
+				onclick={() => diagnosticsStream.start({ mode: diagnosticsMode })}
+			>
+				{diagnosticsStatus === 'running' ? 'Streaming…' : 'Start'}
+			</button>
+			<button
+				class="rounded bg-red-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={diagnosticsStatus !== 'running'}
+				onclick={() => diagnosticsStream.stop()}
+			>
+				Stop
+			</button>
+			<button
+				class="rounded bg-neutral-600 px-4 py-2 text-white disabled:opacity-50"
+				disabled={diagnosticsStatus === 'running'}
+				onclick={() => {
+					diagnosticsChunks = [];
+					diagnosticsStatus = 'idle';
+					diagnosticsError = null;
+					diagnosticsSummary = null;
+				}}
+			>
+				Clear
+			</button>
+		</div>
+
+		<div class="text-sm text-neutral-300">
+			Status: <span class="rounded bg-neutral-800 px-2 py-1">{diagnosticsStatus}</span>
+			Chunks: <span class="rounded bg-neutral-800 px-2 py-1">{diagnosticsChunks.length}</span>
+		</div>
+
+		{#if diagnosticsSummary}
+			<div class="text-xs text-neutral-500">
+				runId: {diagnosticsSummary.runId.slice(0, 8)}… · duration:
+				{diagnosticsSummary.durationMs}ms
+			</div>
+		{/if}
+
+		{#if diagnosticsError}
+			<div class="rounded bg-red-900/30 p-2 text-red-200">{diagnosticsError}</div>
+		{/if}
+
+		{#if diagnosticsChunks.length > 0}
+			<div class="space-y-2 text-sm">
+				{#each diagnosticsChunks as chunk}
+					<div class="rounded border border-neutral-800 bg-neutral-900 p-2">
+						<div class="text-xs text-neutral-500">
+							{new Date(chunk.ts).toLocaleTimeString()} · {chunk.stage.toUpperCase()}
+						</div>
+						<div>{chunk.message}</div>
+					</div>
+				{/each}
+			</div>
+		{/if}
+	</section>
+
+	<section class="rounded-lg border border-green-700 bg-green-900/20 p-4">
+		<h2 class="mb-3 text-xl font-semibold text-green-400">✅ v2.5 Feature Checklist</h2>
 		<ul class="space-y-1 text-sm text-neutral-300">
-			<li>✅ Custom streams with zod validation (vowelCounter)</li>
-			<li>✅ AI SDK integration with tools (questionAsker)</li>
-			<li>✅ Access to meta.event for framework data</li>
-			<li>✅ runId tracking for each execution</li>
-			<li>✅ abortSignal support for cancellation</li>
-			<li>✅ Storage provider interface</li>
-			<li class="mt-2 font-semibold text-green-400">Plus v2.5 exclusive features:</li>
-			<li>✅ Plugin system with scopes</li>
-			<li>✅ beforeRun/afterRun hooks</li>
-			<li>✅ Throttling support</li>
-			<li>✅ Client retry logic</li>
-			<li>✅ CORS configuration</li>
-			<li>✅ Heartbeat support</li>
-			<li>✅ Selective plugin usage</li>
+			<li>• Schema validation + throttled streaming (`textAnalyzer`)</li>
+			<li>• beforeRun/afterRun hooks with run metrics logging</li>
+			<li>• AI plugin with tool calls and streamed deltas (`aiWorkbench`)</li>
+			<li>• Resumable storage adapter with runId continuity (`resumableTranscript`)</li>
+			<li>• Error vs validation failure scenarios (`diagnosticsStream`)</li>
+			<li>• SSE lifecycle events, retry hints, and client reconnection (all streams)</li>
+			<li>• Server CORS + heartbeat configuration (`riverConfig` options)</li>
 		</ul>
-	</div>
+	</section>
 </div>

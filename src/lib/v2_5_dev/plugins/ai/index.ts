@@ -1,72 +1,43 @@
-import type {
-	LanguageModel,
-	StreamTextResult,
-	ToolSet,
-	CoreMessage,
-	TextStreamPart
-} from 'ai';
+import type { LanguageModel, StreamTextResult, ToolSet, ModelMessage } from 'ai';
 import { streamText } from 'ai';
-import type { BaseStreamContext, RiverPlugin, PluginDescriptor } from '../types.js';
-import { createRiverPlugin } from './internal/create-river-plugin.js';
-import { defineContext } from './internal/plugin-context.js';
-
-export interface AIPluginConfig {
-	models: Record<string, LanguageModel>;
-	defaultModel?: string;
-}
-
-export interface StreamTextOptions<TOOLS extends ToolSet> {
-	model: string;
-	prompt?: string;
-	messages?: CoreMessage[];
-	system?: string;
-	temperature?: number;
-	tools?: TOOLS;
-}
-
-export type ToolEvent<TName extends string, TInput = unknown, TOutput = unknown> = {
-	type: 'tool';
-	toolName: TName;
-	input: TInput;
-	output?: TOutput;
-};
-
-export type NormalizedStreamPart<Tools extends ToolSet> =
-	| TextStreamPart<Tools>
-	| ToolEvent<string, unknown, unknown>;
-
-export interface AIHelpers {
-	streamText: <TOOLS extends ToolSet>(
-		options: StreamTextOptions<TOOLS>
-	) => StreamTextResult<TOOLS, never>;
-
-	pipeTextStream: <T extends ToolSet>(
-		result: StreamTextResult<T, any>,
-		appendChunk: (delta: string) => void,
-		abortSignal: AbortSignal
-	) => Promise<void>;
-
-	normalizeStream: <T extends ToolSet>(
-		result: StreamTextResult<T, any>,
-		appendChunk: (chunk: NormalizedStreamPart<T>) => void,
-		abortSignal: AbortSignal
-	) => Promise<void>;
-}
+import type { BaseStreamContext } from '../../types.js';
+import { createRiverPlugin } from '../internal/create-river-plugin.js';
+import { defineContext } from '../internal/plugin-context.js';
+import type {
+	AIHelpers,
+	AIPluginConfig,
+	AIPluginDescriptor,
+	NormalizedStreamPart,
+	StreamTextOptions
+} from './types.js';
 
 const createAIHelpers = (config: AIPluginConfig, meta: BaseStreamContext): AIHelpers => {
-	const getAIModel = (modelId: string): LanguageModel => {
+	const availableModels = Object.keys(config.models);
+
+	const resolveModelId = (requested?: string): string => {
+		const modelId = requested ?? config.defaultModel;
+		if (!modelId) {
+			const availableList = availableModels.join(', ') || 'none';
+			throw new Error(
+				`No model specified for AI stream and no defaultModel configured. Available models: ${availableList}`
+			);
+		}
+		return modelId;
+	};
+
+	const getAIModel = (requested?: string): LanguageModel => {
+		const modelId = resolveModelId(requested);
 		const model = config.models[modelId];
 		if (!model) {
-			const availableModels = Object.keys(config.models).join(', ');
 			throw new Error(
-				`Model "${modelId}" not found in server config. Available models: ${availableModels}`
+				`Model "${modelId}" not found in server config. Available models: ${availableModels.join(', ')}`
 			);
 		}
 		return model;
 	};
 
-	const coerceMessages = (prompt?: string, messages?: CoreMessage[]): CoreMessage[] => {
-		const output: CoreMessage[] = messages ? [...messages] : [];
+	const coerceMessages = (prompt?: string, messages?: ModelMessage[]): ModelMessage[] => {
+		const output: ModelMessage[] = messages ? [...messages] : [];
 		if (prompt) {
 			output.push({ role: 'user', content: prompt });
 		}
@@ -85,7 +56,7 @@ const createAIHelpers = (config: AIPluginConfig, meta: BaseStreamContext): AIHel
 				temperature: options.temperature,
 				tools: options.tools,
 				abortSignal: meta.event.request.signal
-			});
+			}) as StreamTextResult<T, never>;
 		},
 
 		pipeTextStream: async (result, appendChunk, abortSignal) => {
@@ -134,11 +105,18 @@ const createAIHelpers = (config: AIPluginConfig, meta: BaseStreamContext): AIHel
 	};
 };
 
-export function ai(): PluginDescriptor<AIPluginConfig, { ai: AIHelpers }, 'stream', 'ai'> {
+export function ai(): AIPluginDescriptor {
 	return {
 		id: 'ai',
 		scope: 'stream',
 		createPlugin: (config: AIPluginConfig) => {
+			if (config.defaultModel && !config.models[config.defaultModel]) {
+				const availableModels = Object.keys(config.models).join(', ') || 'none';
+				throw new Error(
+					`defaultModel "${config.defaultModel}" not found in AI plugin config. Available models: ${availableModels}`
+				);
+			}
+
 			const context = defineContext({
 				ai: (meta) => createAIHelpers(config, meta)
 			});
@@ -151,3 +129,12 @@ export function ai(): PluginDescriptor<AIPluginConfig, { ai: AIHelpers }, 'strea
 		}
 	};
 }
+
+export type {
+	AIPluginConfig,
+	AIHelpers,
+	StreamTextOptions,
+	ToolEvent,
+	NormalizedStreamPart,
+	AIPluginDescriptor
+} from './types.js';

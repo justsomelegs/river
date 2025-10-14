@@ -1,25 +1,27 @@
 export { riverServer, riverConfig } from './server.js';
-export { createSSEStream as createSseStream } from './sse.js';
-export { ai } from './plugins/ai.js';
+export type { RiverServerInstance, RiverEndpoint, InferStreamMap } from './server.js';
+export { ai } from './plugins/ai/index.js';
 export { createRiverPlugin } from './plugins/internal/create-river-plugin.js';
 export { defineContext } from './plugins/internal/plugin-context.js';
-export { createRiverClient } from './client.js';
-export { createDefaultStorageProvider } from './storage.js';
+export { createRiverClient, RiverClientError } from './client.js';
+export { createDefaultStorageAdapter } from './storage/default.js';
+export { createStorageAdapter } from './storage/adapter.js';
 export {
-	createInMemoryStorageProvider,
+	createInMemoryStorageAdapter,
 	getStoredStream,
 	getAllStoredStreams,
 	clearStoredStreams,
 	getStoredStreamCount
-} from './in-memory-storage.js';
+} from './storage/in-memory.js';
 
 export type {
 	AIPluginConfig,
 	AIHelpers,
 	StreamTextOptions,
 	ToolEvent,
-	NormalizedStreamPart
-} from './plugins/ai.js';
+	NormalizedStreamPart,
+	AIPluginDescriptor
+} from './plugins/ai/types.js';
 
 export type {
 	StreamDefinition,
@@ -54,13 +56,34 @@ export type {
 	StreamInputType,
 	StreamChunkType,
 	StreamCompletionSummary,
-	StreamStorageProvider,
-	StreamStorageSession
+	StreamStorageAdapter,
+	StreamRunWriter,
+	StorageCapabilities,
+	StorageRunContext,
+	StorageRunQuery,
+	StoredRun,
+	StoredRunSummary,
+	StorageHealthReport,
+	ChunkMeta,
+	CompletionSummary,
+	FailureSummary,
+	AbortSummary
 } from './types.js';
 
 export type {
 	RiverClient,
 	RiverStreamCaller,
 	RiverStreamStatus,
-	StreamCallerOptions
+	RiverClientConfig,
+	RiverClientRetryConfig,
+	RiverClientLogger,
+	RiverFetch,
+	StreamCallerOptions,
+	RiverStreamEvent,
+	StreamStartOptions,
+	RiverHttpErrorDetails
 } from './client.js';
+
+export type { DefaultStorageAdapterOptions } from './storage/default.js';
+export type { InMemoryStorageOptions } from './storage/in-memory.js';
+export type { StorageAdapterConfig } from './storage/adapter.js';
